@@ -1,0 +1,739 @@
+---
+title: "Notes for HLE Decomposition"
+author: "Wanying Ling"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+This is a code note for the decomposition approach to healthy life expectancy based on multistate life tables (Shen et.al, [*2023*](https://doi.org/10.1215/00703370-11058373)).
+
+```{r Setup,message=FALSE, warning=FALSE, cache=TRUE}
+# Tidy up the workspace
+rm(list=ls())
+options(scipen = 100)
+
+# import packages
+library(abind)
+library(tidyverse)
+library(doParallel)
+```
+
+## Dataset
+
+The dataset **BASELINE.csv** includes the initial health structure of the population. It contains four variables:
+
+-   **state**: health state (with 1 and 2, healthy and unhealthy respectively)
+
+-   **ragender**: gender
+
+-   **pro**: proportion of the population in that health state (they are rescaled to 1 by sex and iteration to calculated the HLE for male and female separately)
+
+-   **iter**: bootstrap iteration number
+
+```{r ImportINI, message=FALSE, warning=FALSE, cache=TRUE}
+
+# Setting the working path
+setwd("D:/Research/Research_2023/1-HLEdecom")
+
+# import datasets
+INI = read_csv(paste0("Raw_data/BASELINE.csv"))
+
+# variables
+names(INI)
+
+```
+
+The dataset **PROB.csv** includes the transition probabilities by age. It contains seven variables:
+
+-   **pre_state**: the initial state
+
+-   **ragender**: gender
+
+-   **age**: age
+
+-   **iter**: bootstrap iteration number
+
+-   **A**: probability to "Healthy" given the initial state
+
+-   **L**: probability to "Unhealthy" given the initial state
+
+-   **H**: probability to "Death" given the initial state
+
+```{r ImportTRANS, message=FALSE, warning=FALSE, cache=TRUE}
+# Setting the working path
+setwd("D:/Research/Research_2023/1-HLEdecom")
+
+# import datasets
+TRANS = read_csv(paste0("Raw_data/PROB.csv"))
+
+# variables
+names(TRANS)
+
+```
+
+## Table 1 - Panel A : Baseline population health structure­(Table 1 - Panel A)
+
+$l_\alpha^{i i}$ are the initial proportions of people at state $i$ at the radix age $\alpha$ of the multistate life table. The diagonal in this matrix adds up to $100 \%$ of the initial population, so $\sum_{i=1}^n l_\alpha^{i i}=1$ when computing the population-based multistate life expectancy.
+
+$$
+\mathbf{l}_\alpha=\left[\begin{array}{cccc}
+l_\alpha^{11} & 0 & \cdots & 0 \\
+0 & l_\alpha^{22} & \cdots & 0 \\
+\vdots & \vdots & \ddots & \vdots \\
+0 & 0 & \cdots & l_\alpha^{n n}
+\end{array}\right]
+$$ Next, let's calculate $\mathbf{l}_\alpha$ for the female population, which we denote by $\mathbf{l}_0^{female}$.
+
+### Function 1: l0_func
+
+**l0_func** : Function for obtaining baseline population health structure.
+
+```{r l0_func, message=FALSE, warning=FALSE, cache=TRUE}
+# Function for obtain baseline population health structure
+l0_func <- function(data, gender,iteration){
+  ini = data %>% filter(ragender == gender,iter==iteration)%>% ungroup()%>% 
+    arrange(state) %>% pull(pro)
+  ## standardise them to  to generate l0 
+  t= (ini[1]+ini[2])
+  ini[1] = ini[1]/t
+  ini[2] = ini[2]/t
+  ## l0_1 denotes the initial proportions of the  population 
+  l0 = matrix(c(ini[1],0,0,
+                0,ini[2],0,
+                0,0,0),nrow=3,byrow = T)
+  return(l0)
+}
+```
+
+### Function 2: lx_func
+
+**lx_func** : Function for obtaining $l_x$
+
+```{r lx_func, message=FALSE, warning=FALSE, cache=TRUE}
+lx_func <- function(trans, init){
+  l = list(init)
+  for (a in 1:(length(trans))) {
+    lx = l[[a]] %*% trans[[a]]
+    l[[length(l)+1]]=lx
+    }
+  return(l)
+}
+```
+
+
+Calculating results for 500 iterations to generate confidence intervals.
+
+```{r , message=FALSE, warning=FALSE, cache=TRUE}
+## Using multiple cores makes computing faster
+registerDoParallel(min(detectCores(),12))
+## Calculating results for 500 iterations to generate confidence intervals
+Table1PanelA = foreach(i=1:500,.packages = c("tidyverse")) %dopar% {
+
+ ## For female
+ l0_female = l0_func(data = INI, gender = 2, iteration = i)
+ ## For male
+ l0_male = l0_func(data = INI, gender = 1, iteration = i)
+ 
+ res_l0 = list(l0_female=l0_female,l0_male=l0_male)
+ res_l0
+}
+stopImplicitCluster()
+```
+
+Output Baseline population health structure, i.e., the Panel A in Table 1.
+
+```{r , message=FALSE, warning=FALSE, cache=TRUE}
+
+## Baseline population health structure­(Table 1 - Panel A - female)
+print("Baseline population health structure­(Table 1 - Panel A - female)")
+
+l0_female = Table1PanelA[[1]][["l0_female"]]
+for (a in 2:500) {
+  l0_female = abind(l0_female,Table1PanelA[[a]][["l0_female"]],along = 3)
+}
+
+round(colSums(Table1PanelA[[1]][["l0_female"]]),2)[1:2] ## estimate
+print("95% confidence interval:")
+round(apply(apply(l0_female,c(2,3),sum),c(1),quantile,0.025),2)[1:2] ## Lower 95% confidence interval
+round(apply(apply(l0_female,c(2,3),sum),c(1),quantile,0.975),2)[1:2] ## Upper 95% confidence interval
+
+
+## Baseline population health structure­(Table 1 - Panel A - male)
+print("Baseline population health structure­(Table 1 - Panel A - male)")
+
+l0_male = Table1PanelA[[1]][["l0_male"]]
+for (a in 2:500) {
+  l0_male = abind(l0_male,Table1PanelA[[a]][["l0_male"]],along = 3)
+}
+
+round(colSums(Table1PanelA[[1]][["l0_male"]]),2)[1:2] ## estimate
+print("95% confidence interval:")
+round(apply(apply(l0_male,c(2,3),sum),c(1),quantile,0.025),2)[1:2] ## Lower 95% confidence interval
+round(apply(apply(l0_male,c(2,3),sum),c(1),quantile,0.975),2)[1:2] ## Upper 95% confidence interval
+
+```
+
+## Table 1 - Panel B : Status Based HLE and ULE­(Table 1 - Panel B)
+
+Panel­ B­ of­Table 1 presents the status­based HLE and ULE at age 55, where the expectancies are not weighted by the initial population structure from panel A. Each row represents expected years spent in different health states separately by initial disability status.
+
+$${ }_{\beta-x}\mathbb{e}_x=\frac{\mathbb{I}}{2}+\sum_{h=x}^{\beta-2}\left(\prod_{k=x}^h \mathbf{P}_k\right)+\frac{\prod_{k=x}^{\beta-1} \mathbf{P}_k}{2}$$
+
+where $\mathbb{I}$ is the identity matrix and ${ }_{\beta-x} \mathbb{e}_x$ is the status-based life expectancy between age $x$ and $\beta$. The latter quantity is similar to the population-based life expectancy, ${ }_{\beta-\alpha} \mathbf{e}_\alpha$, in Eq. (2), but without the product of the initial population structure, $\mathbf{l}_\alpha$.
+
+For a multistate life table with $n$ states, $1,2, \ldots, n$, the matrix of transition probabilities at a given age $x$ is an $n$-by- $n$ square matrix.
+
+$$
+\mathbf{P}_x=\left[\begin{array}{cccc}
+p_x^{11} & p_x^{12} & \cdots & p_x^{1 n} \\
+p_x^{21} & p_x^{22} & \cdots & p_x^{2 n} \\
+\vdots & \vdots & \ddots & \vdots \\
+p_x^{n 1} & p_x^{n 2} & \cdots & p_x^{n n}
+\end{array}\right]
+$$
+
+
+### Function 3: P_func
+
+**P_func** : Function for obtaining the matrix of transition probabilities.
+
+```{r P_func, message=FALSE, warning=FALSE, cache=TRUE}
+# Function for obtaining the matrix of transition probabilities.
+P_func <- function(data, gender,iteration){
+  
+  ## import transition probabilities
+    # filter (): select the part of the data which ragender == 1 and iter==i;
+    # pivot_longer() : convert the wide data of columns 5 to 7 to long data, 
+    # with the column name as the value of the "state" variable and the value as the value of the "prob" variable.
+  trans = data %>% filter(ragender == gender,iter==iteration) %>% 
+    pivot_longer(c(5:7),names_to = "state",values_to = "prob")
+    # Add transition probabilities for death-related states
+    H = crossing(pre_state= "H",state = c("A","L","H"),ragender= unique(trans$ragender),
+               age = unique(trans$age),iter = i,prob = 0)
+  H = H %>% mutate(prob = ifelse(state == "H"& pre_state=="H", 1, prob))
+  # Overlay data in existing rows
+  trans = bind_rows(trans,H)
+
+  # Extracting the pre-state, state, age and probability
+  trans$pre_state = factor(trans$pre_state,levels = c("A","L","H"))
+  trans$state = factor(trans$state,levels = c("A","L","H"))
+  trans = xtabs(prob ~ pre_state+state+age,data = trans)
+  # converting the transfer probabilities of the male population into a list format;
+  # P_x denotes the matrix of transition probabilities for females population
+  P_x = lapply(seq(dim(trans)[3]), function(x) trans[ , , x])
+  # standardise the matrix if applicable 
+  P_x = lapply(P_x, function(X){
+   X<- X/rowSums(X)
+   X
+  })
+
+  return(P_x)
+}
+```
+
+### Function 4: All_P_func
+
+**All_P_func** : Function for obtaining \$ \prod\_{k=x}\^{\beta-1} \mathbf{P}\_k}\$.
+
+```{r All_P_func, message=FALSE, warning=FALSE, cache=TRUE}
+# Function for obtaining $ \prod_{k=x}^{\beta-1} \mathbf{P}_k}$.
+All_P_func <- function(P_x){
+  All_P = vector(mode = "list",length = length(P_x))
+    for (i in 1:(length(P_x)-1)) {
+    All_P[[i]] = list(P_x[[i]])
+      for (j in i:(length(P_x)-1)) {
+      tem = All_P[[i]][[length(All_P[[i]])]] %*% P_x[[j+1]]
+      All_P[[i]][[length(All_P[[i]])+1]] = tem
+      }
+    All_P[[i]][[length(All_P[[i]])]] = All_P[[i]][[length(All_P[[i]])]]/2
+    }
+  All_P[[(length(P_x))]] = list(P_x[[(length(P_x))]]/2)
+  
+  return(All_P)
+}
+```
+
+### Function 5: SUM_func
+
+**SUM_func** : Function for obtaining $\mathbb{e}_x$ (Status­Based­HLE­and­ULE).
+
+```{r SUM_func, message=FALSE, warning=FALSE, cache=TRUE}
+# Function for obtaining $ \prod_{k=x}^{\beta-1} \mathbf{P}_k}$.
+SUM_func <- function(dim, All_P){
+  I= diag(dim) ## it contains 3 status
+  SUM = list()
+  for(i in 1:length(All_P)){
+   SUM[[i]]= Reduce(`+`, All_P[[i]]) + I/2
+  }
+  for(i in 2:length(SUM)){
+  SUM[[i]]= SUM[[i]] + I/2
+  }
+
+  SUM[[length(SUM)+1]]=I/2
+  return(SUM)
+}
+```
+
+Calculating results for 500 iterations to generate confidence intervals.
+
+```{r ,message=FALSE, warning=FALSE, cache=TRUE}
+## Using multiple cores makes computing faster
+registerDoParallel(min(detectCores(),12))
+## Calculating results for 500 iterations to generate confidence intervals
+Table1PanelB = foreach(i=1:500,.packages = c("tidyverse")) %dopar% {
+
+  ## For female
+  P_female = P_func (data=TRANS, gender=2,iteration=i)
+  ## Obtaining \prod_{k=x}^{\beta-1} \mathbf{P}_k}
+  All_P_female = All_P_func(P_x=P_female)
+  # Status­Based­HLE­and­ULE
+  SUM_female = SUM_func(dim=3, All_P=All_P_female)
+
+
+  ## For male
+  P_male = P_func (data=TRANS, gender=1,iteration=i)
+  ## Obtaining \prod_{k=x}^{\beta-1} \mathbf{P}_k}
+  All_P_male = All_P_func(P_x=P_male)
+  # Status­Based­HLE­and­ULE
+  SUM_male = SUM_func(dim=3, All_P=All_P_male)
+
+SUM = list(SUM_female= SUM_female, SUM_male=SUM_male)
+
+}
+stopImplicitCluster()
+
+```
+
+Output Status­Based­HLE­and­ULE, i.e., the Panel B in Table 1.
+
+```{r , message=FALSE, warning=FALSE, cache=TRUE}
+
+## Baseline population health structure­(Table 1 - Panel B - female)
+print("Status­Based­HLE­and­ULE­(Table 1 - Panel B - female)")
+
+HLE_status_female = Table1PanelB[[1]][["SUM_female"]][[1]]
+for (a in 2:500) {
+  HLE_status_female = abind(HLE_status_female,Table1PanelB[[a]][["SUM_female"]][[1]],along = 3)
+}
+
+round(Table1PanelB[[1]][["SUM_female"]][[1]],2)[1:2,1:2]## estimate
+print("95% confidence interval:")
+round(apply(HLE_status_female,c(1,2),quantile,0.025),2)[1:2,1:2]## Lower 95% confidence interval
+round(apply(HLE_status_female,c(1,2),quantile,0.975),2)[1:2,1:2]## Upper 95% confidence interval
+
+
+## Baseline population health structure­(Table 1 - Panel B - male)
+print("Status­Based­HLE­and­ULE­(Table 1 - Panel B - male)")
+
+HLE_status_male = Table1PanelB[[1]][["SUM_male"]][[1]]
+for (a in 2:500) {
+ HLE_status_male = abind(HLE_status_male,Table1PanelB[[a]][["SUM_male"]][[1]],along = 3)
+}
+
+round(Table1PanelB[[1]][["SUM_male"]][[1]],2)[1:2,1:2]## estimate
+print("95% confidence interval:")
+round(apply(HLE_status_male,c(1,2),quantile,0.025),2)[1:2,1:2]## Lower 95% confidence interval
+round(apply(HLE_status_male,c(1,2),quantile,0.975),2)[1:2,1:2]## Upper 95% confidence interval
+
+```
+
+## Table 1 - Panel C : Population Based HLE and ULE
+
+The expectancy in multistate life table from age $\alpha$ to $\beta$ can be represented as
+
+$$
+{}_{\beta-\alpha} \mathbf{e}_\alpha==\left[\begin{array}{cccc}
+{}_{\beta-\alpha} e_\alpha^{11} & {}_{\beta-\alpha} e_\alpha^{12} & \cdots & {}_{\beta-\alpha} e_\alpha^{1 n} \\
+{}_{\beta-\alpha} e_\alpha^{21} & {}_{\beta-\alpha} e_\alpha^{22} & \cdots & {}_{\beta-\alpha} e_\alpha^{2 n} \\
+\vdots & \vdots & \ddots & \vdots \\
+{}_{\beta-\alpha} e_\alpha^{n 1} & {}_{\beta-\alpha} e_\alpha^{n 2} & \cdots & {}_{\beta-\alpha} e_\alpha^{n n}
+\end{array}\right]
+$$
+
+where $_{\beta-\alpha} e_\alpha^{i j}$ corresponds to the expected contribution to population-based life expectancy in state $j$ from age $\alpha$ to $\beta$ for individuals in initial state $i$ at exact age $\alpha$,weighted by the initial population structure.
+
+As in the single-decrement life expectancy, the population-based multistate life expectancy, ${ }_{\beta-\alpha} \mathbf{e}_\alpha$, is calculated in terms of the survival matrix as $$
+{ }_{\beta-\alpha} \mathbf{e}_\alpha=\frac{\mathbf{l}_\alpha}{2}+\sum_{x=\alpha+1}^{\beta-1} \mathbf{l}_x+\frac{\mathbf{l}_\beta}{2},
+$$ where the $\mathbf{l}_\beta$ is the survival matrix of the last age and $\mathbf{l}_x$ are the ones between ages $\alpha$ and $\beta$.
+
+And the survival matrix $\mathbf{l}_x$ can be also calculated based on the transition probabilities as
+
+$$
+\mathbf{l}_x=\mathbf{l}_{x-1} \mathbf{P}_{x-1}=\mathbf{l}_\alpha \prod_{k=\alpha}^{x-1} \mathbf{P}_k,
+$$ where the product operator $\prod_{k=\alpha}^{x-1} \mathbf{P}_k$ invokes matrix products.
+
+
+### Function 6: HLE_func
+
+**HLE_func** : Function for obtaining $e_x$ (Popualtion­Based LE,­HLE­and­ULE).
+
+```{r HLE_func, message=FALSE, warning=FALSE, cache=TRUE}
+# Function for obtaining $ \prod_{k=x}^{\beta-1} \mathbf{P}_k}$.
+HLE_func <- function(trans, init){
+  l = list(init)
+  e = init*0
+  for (a in 1:(length(trans))) {
+    lx = l[[a]] %*% trans[[a]]
+    l[[length(l)+1]]=lx
+    Lx = (l[[a]]+l[[a+1]])/2
+    e = e+Lx
+  }
+  return(e)
+}
+```
+
+Calculating results for 500 iterations to generate confidence intervals.
+
+```{r ,message=FALSE, warning=FALSE, cache=TRUE}
+
+registerDoParallel(min(detectCores(),12))
+Table1PanelC = foreach(i=1:500,.packages = c("tidyverse")) %dopar% {
+
+ ## For female
+ l0_female = l0_func(data = INI, gender = 2, iteration = i)
+ P_female = P_func (data=TRANS, gender=2,iteration=i)
+ e_female = HLE_func(trans=P_female, init=l0_female)
+ 
+ ## For male
+ l0_male = l0_func(data = INI, gender = 1, iteration = i)
+ P_male = P_func (data=TRANS, gender=1,iteration=i)
+ e_male = HLE_func(trans=P_male, init=l0_male)
+ 
+ e = list (e_female=e_female,e_male=e_male)
+
+}
+stopImplicitCluster()
+
+```
+
+Output Population­Based­HLE­and­ULE, i.e., the Panel C in Table 1.
+
+```{r , message=FALSE, warning=FALSE, cache=TRUE}
+## Baseline population health structure­(Table 1 - Panel C - female)
+print("Population­Based­HLE­and­ULE­(Table 1 - Panel C - female)")
+
+HLE_popu_female = Table1PanelC[[1]][["e_female"]]
+for (a in 2:500) {
+  HLE_popu_female = abind(HLE_popu_female,Table1PanelC[[a]][["e_female"]],along = 3)
+}
+
+round(Table1PanelC[[1]][["e_female"]],2)[1:2,1:2]## estimate
+round(colSums(Table1PanelC[[1]][["e_female"]]),2) ## total 
+print("95% confidence interval:")
+round(apply(apply(HLE_popu_female,c(2,3),sum),c(1),quantile,0.975),2)[1:2]## Lower 95% confidence interval
+round(apply(apply(HLE_popu_female,c(2,3),sum),c(1),quantile,0.975),2)[1:2]## Upper 95% confidence interval
+
+
+## Baseline population health structure­(Table 1 - Panel C - male)
+print("Population­Based­HLE­and­ULE­(Table 1 - Panel C - male)")
+
+HLE_popu_male = Table1PanelC[[1]][["e_male"]]
+for (a in 2:500) {
+ HLE_popu_male = abind(HLE_popu_male ,Table1PanelC[[a]][["e_male"]],along = 3)
+}
+round(Table1PanelC[[1]][["e_male"]],2)[1:2,1:2]## estimate
+round(colSums(Table1PanelC[[1]][["e_male"]]),2) ## total 
+print("95% confidence interval:")
+round(apply(apply(HLE_popu_male,c(2,3),sum),c(1),quantile,0.025),2)[1:2]## Lower 95% confidence interval
+round(apply(apply(HLE_popu_male,c(2,3),sum),c(1),quantile,0.975),2)[1:2]## Upper 95% confidence interval
+
+
+```
+
+## Table 2 - Panel A: Difference in Expectancies
+
+The difference in expectancies $_{\beta-\alpha} \dot{\mathbf{e}}_\alpha$ can be decomposed into two components, from the initial population $\dot{\mathbf{l}}_\alpha \cdot{ }_{\beta-\alpha} \mathbb{e}_\alpha$ and from the transitions $\sum_{x=\alpha}^{\beta-1} \mathbf{l}_x \dot{\mathbf{P}}_x\left(\frac{\mathbb{I}}{2}+{ }_{\beta-x-1} \mathbb{e}_{x+1}\right)$.
+
+$$
+\begin{aligned}
+&_{\beta-\alpha} \dot{\mathbf{e}}_\alpha=\frac{\dot{\mathbf{l}}_\alpha}{2}+\sum_{x=\alpha+1}^{\beta-1} \dot{\mathbf{l}}_x+\frac{\dot{\mathbf{l}}_\beta}{2} \\
+& =\frac{\dot{\mathbf{l}}_\alpha}{2}+\sum_{x=\alpha+1}^{\beta-1}\left[\dot{\mathbf{l}}_\alpha \prod_{k=\alpha}^{x-1} \mathbf{P}_k+\sum_{h=\alpha}^{x-1}\left(\mathbf{l}_h \dot{\mathbf{P}}_h \prod_{k=h+1}^{x-1} \mathbf{P}_k\right)\right] +\frac{\dot{\mathbf{l}}_\alpha \prod_{k=\alpha}^{\beta-1} \mathbf{P}_k+\sum_{h=\alpha}^{\beta-1}\left(\mathbf{l}_h \dot{\mathbf{P}}_h \prod_{k=h+1}^{\beta-1} \mathbf{P}_k\right)}{2} \\
+& =\frac{\dot{\mathbf{l}}_\alpha}{2}+\sum_{x=\alpha+1}^{\beta-1}\left(\dot{\mathbf{l}}_\alpha \prod_{k=\alpha}^{x-1} \mathbf{P}_k\right)+\frac{\dot{\mathbf{l}}_\alpha \prod_{k=\alpha}^{\beta-1} \mathbf{P}_k}{2}+\sum_{x=\alpha+1}^{\beta-1} \sum_{h=\alpha}^{x-1}\left(\mathbf{1}_h \dot{\mathbf{P}}_h \prod_{k=h+1}^{x-1} \mathbf{P}_k\right)  +\frac{\sum_{h=\alpha}^{\beta-1}\left(\mathbf{l}_h \dot{\mathbf{P}}_h \prod_{k=h+1}^{\beta-1} \mathbf{P}_k\right)}{2} \\
+& =\dot{\mathbf{l}}_\alpha\left(\frac{\mathbb{I}}{2}+\mathbf{P}_\alpha+\mathbf{P}_\alpha \mathbf{P}_{\alpha+1}+\cdots+\mathbf{P}_\alpha \mathbf{P}_{\alpha+1} \ldots \mathbf{P}_{\beta-2}+\frac{\mathbf{P}_\alpha \mathbf{P}_{\alpha+1} \ldots \mathbf{P}_{\beta-1}}{2}\right) \\ 
+& +\mathbf{l}_\alpha \dot{\mathbf{P}}_\alpha\left(\mathbb{I}+\mathbf{P}_{\alpha+1}+\mathbf{P}_{\alpha+1} \mathbf{P}_{\alpha+2}+\cdots+\mathbf{P}_{\alpha+1} \mathbf{P}_{\alpha+2} \ldots \mathbf{P}_{\beta-2}+\frac{\mathbf{P}_{\alpha+1} \mathbf{P}_{\alpha+2} \ldots \mathbf{P}_{\beta-1}}{2}\right) \\
+& + \mathbf{l}_{\alpha+1} \dot{\mathbf{P}}_{\alpha+1}\left(\mathbb{I}+\mathbf{P}_{\alpha+2}+\mathbf{P}_{\alpha+2} \mathbf{P}_{\alpha+3}+\cdots+\mathbf{P}_{\alpha+2} \mathbf{P}_{\alpha+3} \cdots \mathbf{P}_{\beta-2}\right. \left.+\frac{\mathbf{P}_{\alpha+2} \mathbf{P}_{\alpha+3} \cdots \mathbf{P}_{\beta-1}}{2}\right)+\cdots \\
+&+\mathbf{l}_{\beta-2} \dot{\mathbf{P}}_{\beta-2}\left(\mathbb{I}+\frac{\mathbf{P}_{\beta-1}}{2}\right)+\mathbf{l}_{\beta-1} \dot{\mathbf{P}}_{\beta-1}\left(\frac{\mathbb{I}}{2}\right) \\
+& =\dot{\mathbf{l}}_\alpha\left(_{\beta-\alpha}\mathbb{e}_\alpha\right)+\mathbf{l}_\alpha \dot{\mathbf{P}}_\alpha\left(\frac{\mathbb{I}}{2}+{ }_{\beta-\alpha-1} \mathbb{e}_{\alpha+1}\right)+ \mathbf{l}_{\alpha+1} \dot{\mathbf{P}}_{\alpha+1}\left(\frac{\mathbb{I}}{2}+{ }_{\beta-\alpha-2} \mathbb{e}_{\alpha+2}\right)+\cdots \\
+&+\mathbf{l}_{\beta-2} \dot{\mathbf{P}}_{\beta-2}\left(\frac{\mathbb{I}}{2}+{ }_1 \mathbb{e}_{\beta-1}\right)+\mathbf{l}_{\beta-1} \dot{\mathbf{P}}_{\beta-1}\left(\frac{\mathbb{I}}{2}+{ }_0 \mathbb{e}_\beta\right) \\
+& =\dot{\mathbf{l}}_\alpha \cdot{ }_{\beta-\alpha} \mathbb{e}_\alpha+\sum_{x=\alpha}^{\beta-1} \mathbf{l}_x \dot{\mathbf{P}}_x\left(\frac{\mathbb{I}}{2}+{ }_{\beta-x-1} \mathbb{e}_{x+1}\right) \\
+&
+\end{aligned}
+$$
+
+```{r , message=FALSE, warning=FALSE, cache=TRUE}
+
+yeard = 1
+
+registerDoParallel(min(detectCores(),12))
+Table2PanelA = foreach(i=1:500,.packages = c("tidyverse")) %dopar% {
+
+## For female
+ l0_female = l0_func(data = INI, gender = 2, iteration = i)
+ P_female = P_func (data=TRANS, gender=2,iteration=i)
+ e_female = HLE_func(trans=P_female, init=l0_female)
+ 
+## For male
+ l0_male = l0_func(data = INI, gender = 1, iteration = i)
+ P_male = P_func (data=TRANS, gender=1,iteration=i)
+ e_male = HLE_func(trans=P_male, init=l0_male)
+
+  diff_e = (e_female-e_male)/yeard 
+  diff_e
+  
+}
+stopImplicitCluster()
+
+```
+
+Output Difference in Expectancies, i.e., the Panel A in Table 2.
+
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+diff_e = Table2PanelA[[1]]
+for (a in 2:500) {
+  diff_e = abind(diff_e,Table2PanelA[[a]],along = 3)
+}
+print("Difference in Expectancies (Panel A in Table 2)")
+round(Table2PanelA[[1]],2)[1:2,1:2]
+round(colSums(Table2PanelA[[1]]),3)[1:2]
+print("95% confidence interval:")
+round(apply(apply(diff_e,c(2,3),sum),c(1),quantile,0.025),2)[1:2]
+round(apply(apply(diff_e,c(2,3),sum),c(1),quantile,0.975),2)[1:2]
+```
+
+
+## Table 2 - Panel B: From Initial Population
+
+### Function 7: Decom_func
+
+**Decom_func** : Function for obtaining component from the initial population $\dot{\mathbf{l}}_\alpha \cdot{ }_{\beta-\alpha} \mathbb{e}_\alpha$.
+
+```{r Decom_func, message=FALSE, warning=FALSE, cache=TRUE}
+# Function for obtaining component from the initial population $\dot{\mathbf{l}}_\alpha \cdot{ }_{\beta-\alpha} \mathbb{e}_\alpha$.
+Decom_func <- function(diff_l,diff_P,mean_l,SUM){
+
+  DOT = list(diff_l[[1]])
+  for (i in 2:length(SUM)) {
+    DOT[[i]] = mean_l[[i-1]] %*% diff_P[[i-1]]
+    }
+  
+  DecomINI = Map('%*%',DOT,SUM)
+  return(DecomINI)
+}
+```
+
+Calculating results for 500 iterations to generate confidence intervals.
+
+```{r , message=FALSE, warning=FALSE, cache=TRUE}
+
+yeard = 1
+
+registerDoParallel(min(detectCores(),12))
+Table2PanelBC = foreach(i=1:500,.packages = c("tidyverse")) %dopar% {
+
+## For female
+ l0_female = l0_func(data = INI, gender = 2, iteration = i)
+ P_female = P_func (data=TRANS, gender=2,iteration=i)
+ l_female = lx_func(P_female,l0_female)
+ 
+## For male
+ l0_male = l0_func(data = INI, gender = 1, iteration = i)
+ P_male = P_func (data=TRANS, gender=1,iteration=i)
+ l_male = lx_func(P_male,l0_male)
+ 
+
+  diff_l = list()
+  mean_l = list()
+  for (i in 1:length(l_male)) {
+  diff_l[[i]] = (l_female[[i]]-l_male[[i]])/yeard
+  mean_l[[i]] = (l_female[[i]]+l_male[[i]])/2
+  }
+  
+  diff_P = list()
+  mean_P = list()
+  for (i in 1:length(P_male)) {
+  diff_P[[i]] = (P_female[[i]]-P_male[[i]])/yeard
+  mean_P[[i]] = (P_female[[i]]+P_male[[i]])/2
+  }
+  
+  All_P= All_P_func(P_x=mean_P)
+  SUM = SUM_func(dim=3, All_P=All_P)
+ 
+  Decom = Decom_func(diff_l=diff_l,diff_P=diff_P,mean_l,SUM=SUM)
+  Decom
+}
+stopImplicitCluster()
+
+```
+
+Output component from the initial population $\dot{\mathbf{l}}_\alpha \cdot{ }_{\beta-\alpha} \mathbb{e}_\alpha$, i.e., the Panel B in Table 2.
+
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+comINI = Table2PanelBC[[1]][[1]]
+for (a in 2:500) {
+  comINI = abind(comINI,Table2PanelBC[[a]][[1]],along = 3)
+}
+
+print("component from the initial population (Panel B in Table 2)")
+round(Table2PanelBC[[1]][[1]],2)[1:2,1:2]
+round(colSums(Table2PanelBC[[1]][[1]]),2)[1:2]
+print("95% confidence interval:")
+round(apply(apply(comINI,c(2,3),sum),c(1),quantile,0.025),2)[1:2]
+round(apply(apply(comINI,c(2,3),sum),c(1),quantile,0.975),2)[1:2]
+```
+
+
+## Table 2 - Panel C: From Transitions
+
+Output component from the transitions $\sum_{x=\alpha}^{\beta-1} \mathbf{l}_x \dot{\mathbf{P}}_x\left(\frac{\mathbb{I}}{2}+{ }_{\beta-x-1} \mathbb{e}_{x+1}\right)$., i.e., the Panel C in Table 2.
+
+
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+
+comTRANS = Reduce(`+`, Table2PanelBC[[1]]) - Table2PanelBC[[1]][[1]]
+for (a in 2:500) {
+  comTRANS = abind(comTRANS,Reduce(`+`, Table2PanelBC[[a]]) - Table2PanelBC[[a]][[1]],along = 3)
+}
+
+print("component from the the transitions (Panel c in Table 2)")
+round(Reduce(`+`, Table2PanelBC[[1]]) - Table2PanelBC[[1]][[1]],2)[1:2,1:2]
+round(colSums(Reduce(`+`, Table2PanelBC[[1]]) - Table2PanelBC[[1]][[1]]),2)[1:2]
+print("95% confidence interval:")
+round(apply(apply(comTRANS,c(2,3),sum),c(1),quantile,0.025),2)[1:2]
+round(apply(apply(comTRANS,c(2,3),sum),c(1),quantile,0.975),2)[1:2]
+```
+
+## Table 2 - Panel D: From Each Transition Probability
+
+In the previous section, we obtained decomposition results from the transitions $\sum_{x=\alpha}^{\beta-1} \mathbf{l}_x \dot{\mathbf{P}}_x\left(\frac{\mathbb{I}}{2}+{ }_{\beta-x-1} \mathbb{e}_{x+1}\right)$, and in the following we discuss the contributions of the transitions for different states.
+
+We first examine the effect from transition matrix at age $x$ denoted as $\Lambda_x$, where $\Lambda_x=\mathbf{l}_x \dot{\mathbf{P}}_x\left(\frac{\mathbb{I}}{2}+{ }_{\beta-x-1} \mathbb{e}_{x+1}\right)$. 
+
+For a state-space with states $1,2, \ldots, n$, the matrices of terms are all with the dimension of $n \times n$. The survivorship function at age $x$ is $\mathbf{l}_x=\left[\begin{array}{cccc}l_x^{11} & l_x^{12} & \cdots & l_x^{1 n} \\ l_x^{21} & l_x^{22} & \cdots & l_x^{2 n} \\ \vdots & \vdots & \ddots & \vdots \\ l_x^{n 1} & l_x^{n 2} & \cdots & l_x^{n n}\end{array}\right]$. 
+
+$\dot{\mathbf{P}}_x$ and ${ }_{\beta-x} \mathbb{e}_x$ share the same structure as $\mathbf{P}_x$ and ${ }_{\beta-x} \mathbf{e}_x$, so 
+
+$$\dot{\mathbf{P}}_x =\left[\begin{array}{cccc}\dot{p}_x^{11} & \dot{p}_x^{12} & \cdots & \dot{p}_x^{1 n} \\ \dot{p}_x^{21} & \dot{p}_x^{22} & \cdots & \dot{p}_x^{2 n} \\ \vdots & \vdots & \ddots & \vdots \\ \dot{p}_x^{n 1} & \dot{p}_x^{n 2} & \cdots & \dot{p}_x^{n n}\end{array}\right]$$
+
+$${ }_{\beta-x} \mathbf{e}_x =\left[\begin{array}{cccc}{}_{\beta-x}\varepsilon_{x}^{11} & {}_{\beta-x}\varepsilon_{x}^{12} & \cdots & {}_{\beta-x}\varepsilon_{x}^{1 n} \\ {}_{\beta-x}\varepsilon_{x}^{21} & {}_{\beta-x}\varepsilon_{x}^{22} & \cdots & {}_{\beta-x}\varepsilon_{x}^{2 n} \\ \vdots & \vdots & \ddots & \vdots \\ {}_{\beta-x}\varepsilon_{x}^{n 1} & {}_{\beta-x}\varepsilon_{x}^{n 2} & \cdots & {}_{\beta-x}\varepsilon_{x}^{n n}\end{array}\right]$$
+
+
+$$\boldsymbol{\Lambda}_x = \left[\begin{array}{cccc}\lambda_x^{11} & \lambda_x^{12} & \cdots & \lambda_x^{1 n} \\ \lambda_x^{21} & \lambda_x^{22} & \cdots & \lambda_x^{2 n} \\ \vdots & \vdots & \ddots & \vdots \\ \lambda_x^{n 1} & \lambda_x^{n 2} & \cdots & \lambda_x^{n n}\end{array}\right]$$
+
+
+Each of the element in $\boldsymbol{\Lambda}_x$ can be calculated as,
+
+$$
+\lambda_x^{i j}=\frac{\sum_{g=1}^n l_x^{i g} \dot{p}_x^{g j}}{2}+\sum_{g=1}^n \sum_{h=1}^n l_x^{i g} \dot{p}_x^{g h}{ }_{\beta-x-1} \varepsilon_{x+1}^{h j}
+$$
+
+The effect of a specific transition probability from $g$ to $h$ can be represented as
+$$
+{ }^{g h} \lambda_x^{i j}=\frac{l_x^{i g} \dot{p}_x^{g j}}{2}+l_x^{i g} \dot{p}_x^{g h}{ }_{\beta-x-1} \varepsilon_{x+1}^{h j},
+$$
+Summing up this effect by column, ${ }^{g h} \lambda_x^j=\sum_{i=1}^n{ }^{g h} \lambda_x^{i j}$, is the contribution to the differential in expectancy of each destination state, $j$, by the difference of the specific transition probability at age $x$. Thus, the effect from comparisons of a specific transition probability at age $x$ on the differential in expectancy of state $j$ can be rewritten as, 
+
+$${ }^{g h} \lambda_x^{. j}=\sum_{i=1}^n\left(\frac{l_x^{i g} \dot{p}_x^{g j}}{2}+l_x^{i g} \dot{p}_x^{g h}{ }_{\beta-x-1} \varepsilon_{x+1}^{h j}\right)$$
+
+
+### Function 8: DecomByTrans_func
+
+**DecomByTrans_func** : Function for decomposition of differences in transition probabilities.
+
+```{r DecomByTrans_func, message=FALSE, warning=FALSE, cache=TRUE}
+# Function for decomposition of differences in transition probabilities.
+DecomByTrans_func <- function(dim,diff_P,mean_l,SUM){
+
+  DecomByTrans = vector(mode = "list",length = length(SUM))
+  
+  for (i in 2:length(SUM)) {
+    lambda = c()
+    for(j in c(1:dim)){
+      for (k in c(1:dim)) {
+        for (g in c(1:dim)) {
+          tem = mean_l[[i-1]][j,]*diff_P[[i-1]][,g]*SUM[[i]][g,k]
+          lambda = append(lambda,tem)
+        }
+      }
+    }
+    
+    # reshape the data 
+    lambda = matrix(lambda,dim,dim^3,byrow = T)
+    cn = c()
+    for (j in c(1:dim)) {
+      for (g in c(1:dim)) {
+        cn = append(cn, paste0(g,j))
+      }
+    }
+    A = array(0,c(dim,dim,dim^2),dimnames = list(c(1:dim),c(1:dim),cn))
+    for (j in c(1:dim^2)) {
+      A[,,j] = lambda[,c(seq(j,dim^3,by=dim^2))]
+    }
+    
+    DecomByTrans[[i]] = A
+    
+  }
+  DecomByTrans[[1]] = array(0,c(dim,dim,dim^2),dimnames = list(c(1:dim),c(1:dim),cn))
+  
+  return(DecomByTrans)
+}
+```
+
+Calculating results for 500 iterations to generate confidence intervals.
+
+```{r , message=FALSE, warning=FALSE, cache=TRUE}
+
+yeard = 1
+
+registerDoParallel(min(detectCores(),12))
+Table2PanelD = foreach(i=1:500,.packages = c("tidyverse")) %dopar% {
+
+## For female
+ l0_female = l0_func(data = INI, gender = 2, iteration = i)
+ P_female = P_func (data=TRANS, gender=2,iteration=i)
+ l_female = lx_func(P_female,l0_female)
+ 
+## For male
+ l0_male = l0_func(data = INI, gender = 1, iteration = i)
+ P_male = P_func (data=TRANS, gender=1,iteration=i)
+ l_male = lx_func(P_male,l0_male)
+ 
+
+  mean_l = list()
+  for (i in 1:length(l_male)) {
+  mean_l[[i]] = (l_female[[i]]+l_male[[i]])/2
+  }
+  
+  diff_P = list()
+  mean_P = list()
+  for (i in 1:length(P_male)) {
+  diff_P[[i]] = (P_female[[i]]-P_male[[i]])/yeard
+  mean_P[[i]] = (P_female[[i]]+P_male[[i]])/2
+  }
+  
+  All_P= All_P_func(P_x=mean_P)
+  SUM = SUM_func(dim=3, All_P=All_P)
+ 
+  DecomByTrans = DecomByTrans_func(dim=3,diff_P=diff_P,mean_l=mean_l,SUM=SUM)
+  DecomByTrans
+}
+stopImplicitCluster()
+
+```
+
+Output decomposition of differences in transition probabilities., i.e., the Panel D in Table 2.
+
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+DecomByTrans = apply(Reduce(`+`,Table2PanelD [[1]]), c(2,3), sum)
+for (a in 2:500) {
+  DecomByTrans = abind(DecomByTrans,apply(Reduce(`+`,Table2PanelD[[a]]), c(2,3), sum) ,along = 3)
+}
+
+print("ecomposition of differences in transition probabilities (Panel D in Table 2)")
+round(apply(Reduce(`+`,Table2PanelD[[1]]), c(2,3), sum),2)[1:2,c(1,4,2,5)]
+print("95% confidence interval:")
+round(apply(DecomByTrans,c(1,2),quantile,0.025),2)[1:2,c(1,4,2,5)]
+round(apply(DecomByTrans,c(1,2),quantile,0.975),2)[1:2,c(1,4,2,5)]
+```
